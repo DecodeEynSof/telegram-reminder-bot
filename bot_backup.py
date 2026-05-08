@@ -2,13 +2,16 @@
 import sqlite3
 import asyncio
 import threading
-import time
-from datetime import datetime, timedelta
 import requests
-from bs4 import BeautifulSoup
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 import hashlib
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+translation_cache = {}
 
 BOT_TOKEN = "8603632445:AAGhMcdv9wIM1R88-ZkR7Z5X7gksa4-D3Uk"
 
@@ -42,7 +45,7 @@ async def check_reminders(app):
         await asyncio.sleep(10)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Я бот-напоминатель.\n\n/remind через 10 минут чай\n/remind в 15:30 встреча\n/news - погода и новости")
+    await update.message.reply_text("👋 Привет! Я бот-напоминатель.\n\n/remind через 10 минут чай\n/remind в 15:30 встреча")
 
 async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -80,35 +83,94 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     add_reminder(chat_id, text, remind_time.strftime("%Y-%m-%d %H:%M:%S"))
     await update.message.reply_text(f"✅ Напоминание на {remind_time.strftime('%H:%M')}: {text}")
+def get_neuroscience_news():
+    try:
+        url = "https://www.news-medical.net/neuroscience/"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        news_list = []
+        articles = soup.select('h2 a')[:5]
+        for article in articles:
+            title = article.text.strip()
+            link = article.get('href')
+            if link and not link.startswith('http'):
+                link = 'https://www.news-medical.net' + link
+            news_list.append(f"• [{title}]({link})")
+        if news_list:
+            return "🧠 Нейробиология: последние исследования\n" + "\n".join(news_list) + "\n\n"
+        else:
+            return "🧠 Новостей нейробиологии не найдено\n\n"
+    except Exception as e:
+        return f"🧠 Ошибка парсинга нейробиологии: {e}\n\n"
+def get_robotics_news():
+    try:
+        url = "https://habr.com/ru/rss/topics/robotics/"
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        soup = BeautifulSoup(response.content, 'lxml')
+        news = []
+        for item in soup.find_all('item')[:5]:
+            title = item.title.text if item.title else ""
+            link = item.link.text if item.link else ""
+            if title:
+                news.append(f"• [{title}]({link})")
+        if news:
+            return "🤖 Новости робототехники\n" + "\n".join(news) + "\n\n"
+        return "🤖 Новостей робототехники не найдено\n\n"
+    except:
+        return "🤖 Не удалось загрузить новости робототехники\n\n"
+def get_weather():
+    try:
+        city = "Zelenograd"
+        api_key = ""  # Пока оставим пустым, сделаем бесплатный ключ позже
+        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric&lang=ru"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            temp = data['main']['temp']
+            feels_like = data['main']['feels_like']
+            description = data['weather'][0]['description']
+            return f"🌤 Погода в Зеленограде\nТемпература: {temp}°C (ощущается как {feels_like}°C)\n{description}\n"
+        else:
+            return "🌤 Не удалось получить погоду\n"
+    except Exception as e:
+        return f"🌤 Ошибка погоды: {e}\n"
 
-translation_cache = {}
 
 async def translate_to_russian(text, max_length=1500):
     if len(text) > max_length:
         text = text[:max_length] + "..."
+
     text_hash = hashlib.md5(text.encode()).hexdigest()
     if text_hash in translation_cache:
         return translation_cache[text_hash]
+
     try:
         url = "https://api.mymemory.translated.net/get"
         params = {"q": text, "langpair": "en|ru"}
         response = requests.get(url, params=params, timeout=10)
+
         if response.status_code == 200:
             data = response.json()
             translated = data.get("responseData", {}).get("translatedText", text)
             result = translated
         else:
             result = f"[Не удалось перевести]\n{text}"
+
         if len(translation_cache) > 100:
             translation_cache.clear()
         translation_cache[text_hash] = result
         return result
     except Exception as e:
-        return f"[Оригинал]\n{text}"
+        print(f"Ошибка перевода: {e}")
+        return f"[Оригинал, перевод не удался]\n{text}"
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Собираю погоду и новости...")
-    
+    await update.message.reply_text("🔄 Собираю погоду и новости... Подождите 10-15 секунд.")
+
+    result = ""
+
+    # ========== ПОГОДА (Open-Meteo) ==========
     try:
         lat = 55.999
         lon = 37.190
@@ -119,12 +181,13 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current = data.get('current_weather', {})
             temp = current.get('temperature', 'Нет данных')
             wind = current.get('windspeed', 'Нет данных')
-            await update.message.reply_text(f"🌤 Погода в Зеленограде\nТемпература: {temp}°C\nВетер: {wind} м/с", parse_mode="Markdown")
+            result += f"🌤 Погода в Зеленограде\nТемпература: {temp}°C\nВетер: {wind} м/с\n\n"
         else:
-            await update.message.reply_text("🌤 Не удалось получить погоду")
+            result += "🌤 Не удалось получить погоду\n\n"
     except Exception as e:
-        await update.message.reply_text("🌤 Ошибка погоды")
-    
+        result += "🌤 Ошибка погоды\n\n"
+
+    # ========== НОВОСТИ (NewsAPI) ==========
     NEWSAPI_KEY = "0498d86f0ff84d01b969e93e16b4549d"
     topics = [
         "robotics", "quantum physics", "neuroscience", "biomedical engineering",
@@ -132,11 +195,9 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "programming", "artificial intelligence", "genetics", "immunology",
         "oceanology", "ornithology"
     ]
-    
-    # Инициализируем кэш, если его нет
-    if 'news_cache' not in context.bot_data:
-        context.bot_data['news_cache'] = {}
-    
+
+    result += "🔬 Научные новости\n\n"
+
     for topic in topics:
         try:
             url = f"https://newsapi.org/v2/everything?q={topic}&language=en&pageSize=1&apiKey={NEWSAPI_KEY}"
@@ -145,81 +206,55 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data = response.json()
                 articles = data.get('articles', [])
                 if articles:
-                    article = articles[0]
-                    title = article.get('title', 'Без названия')
-                    link = article.get('url', '#')
-                    description = article.get('description', '')
-                    
-                    news_id = f"{topic}_{hashlib.md5(title.encode()).hexdigest()[:8]}"
-                    
-                    # Сохраняем в кэш
-                    context.bot_data['news_cache'][news_id] = {
-                        'title': title,
-                        'description': description,
-                        'link': link
-                    }
-                    
-                    keyboard = [[InlineKeyboardButton("📝 Пересказать на русском", callback_data=f"summarize_{news_id}")]]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    
-                    await update.message.reply_text(
-                        f"{topic.upper()}\n[{title}]({link})",
-                        parse_mode="Markdown",
-                        reply_markup=reply_markup,
-                        disable_web_page_preview=True
-                    )
+                    title = articles[0].get('title', 'Без названия')
+                    link = articles[0].get('url', '#')
+                    result += f"{topic.upper()}\n• [{title}]({link})\n\n"
                 else:
-                    await update.message.reply_text(f"{topic.upper()}\nНовостей нет", parse_mode="Markdown")
+                    result += f"{topic.upper()}\nНовостей нет\n\n"
             else:
-                await update.message.reply_text(f"{topic.upper()}\nОшибка API", parse_mode="Markdown")
+                result += f"{topic.upper()}\nОшибка API (код {response.status_code})\n\n"
         except Exception as e:
-            await update.message.reply_text(f"{topic.upper()}\nОшибка", parse_mode="Markdown")
+            result += f"{topic.upper()}\nОшибка: {str(e)[:30]}\n\n"
+    await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
 
 async def summarize_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     news_id = query.data.replace("summarize_", "")
-    
-    # Проверяем, есть ли кэш
-    if 'news_cache' not in context.bot_data:
-        await query.edit_message_text("❌ Кэш новостей пуст. Запросите /news заново.")
-        return
-    
-    news_data = context.bot_data['news_cache'].get(news_id)
+    news_data = context.bot_data.get('news_cache', {}).get(news_id)
+
     if not news_data:
-        await query.edit_message_text("❌ Новость не найдена. Запросите /news заново.")
+        await query.edit_message_text("❌ Новость не найдена. Попробуйте /news заново.")
         return
-    
+
     title = news_data['title']
     description = news_data['description']
     link = news_data['link']
-    
+
     await query.edit_message_text(f"🔄 Перевожу: {title}...", parse_mode="Markdown")
-    
+
     translated_title = await translate_to_russian(title)
     translated_desc = await translate_to_russian(description)
-    
+
     await query.edit_message_text(
         f"{translated_title}\n\n{translated_desc}\n\n🔗 [Читать оригинал]({link})",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
-
-
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("remind", remind))
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CallbackQueryHandler(summarize_callback, pattern="^summarize_"))
-   
+
     loop = asyncio.new_event_loop()
     def run_checker():
         asyncio.set_event_loop(loop)
         loop.run_until_complete(check_reminders(app))
     threading.Thread(target=run_checker, daemon=True).start()
-   
+
     print("🤖 Бот запущен...")
     app.run_polling()
 
